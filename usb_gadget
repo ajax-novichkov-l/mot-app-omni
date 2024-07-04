@@ -1,0 +1,48 @@
+#! /bin/sh
+
+usage()
+{
+	echo ""
+	echo "Enable(or switch to) different usb gadget(uvc, rndis, etc)"
+	echo ""
+	echo "Usage:" 
+	echo "	usb_gadget <uvc|rndis> [ip]"
+	echo "		- ip	specify ip addr(only for rndis)"
+	exit 1
+}
+
+enable_uvc()
+{
+	#rndis_configfs disable
+
+	/tmp/nfs/uvc_configfs prepare
+	/tmp/nfs/uvc_configfs enable
+}
+
+enable_rndis()
+{
+	uvc_configfs disable
+
+	rndis_configfs enable
+
+	ip=192.168.2.100
+	if [ -n "$1" ]; then
+		ip=$1
+	fi
+
+	echo "ifconfig usb0 $ip"
+	ifconfig usb0 $ip
+}
+
+#
+# main
+#
+type=$1
+
+if [ "$type" == "uvc" ]; then
+	enable_uvc
+elif [ "$type" == "rndis" ]; then
+	enable_rndis $2
+else
+	usage
+fi

@@ -1,0 +1,213 @@
+#! /bin/sh
+
+GADGET_CONFIGFS=/sys/kernel/config/usb_gadget
+
+usage()
+{
+	echo "Use configfs to setup configurations for usb gadget uvc"
+	echo ""
+	echo "Usage:" 
+	echo "	uvc_configfs <prepare|enable|disable>"
+	echo "		- prepare	prepare the gadget configfs"
+	echo "		- enable	enable the gadget"
+	echo "		- disable	disable the gadget and cleanup"
+	echo ""
+	echo "Note:"
+	echo "	The functions and configurations can only be modified after the 'prepare' and before the 'enable'"
+	exit 1
+}
+
+create_frame_attrs()
+{
+	format=$1
+	name=$2
+	width=$3
+	height=$4
+	interval=$5
+	bitrate_min=$6
+	bitrate_max=$7
+
+	wdir=functions/uvc.usb0/streaming/$format/h/$name
+
+	mkdir $wdir
+	echo $width > $wdir/wWidth
+	echo $height> $wdir/wHeight
+	echo $bitrate_min > $wdir/dwMinBitRate
+	echo $bitrate_max > $wdir/dwMaxBitRate
+	echo $(( $width * $height * 2 )) > $wdir/dwMaxVideoFrameBufferSize
+	echo $interval > $wdir/dwFrameInterval
+	echo $interval > $wdir/dwDefaultFrameInterval
+	#echo -e "333333\n666666\n1000000\n5000000" > $wdir/dwFrameInterval
+}
+
+remove_frame_attrs()
+{
+	format=$1
+	name=$2
+
+	wdir=functions/uvc.usb0/streaming/$format/h/$name
+	rmdir $wdir
+}
+
+configfs_prepare()
+{
+	if ! [ -d "$GADGET_CONFIGFS" ]; then
+		echo "ERROR: $GADGET_CONFIGFS doesn't exist"
+		exit 1
+	fi
+
+	if [ -d "$GADGET_CONFIGFS/g1" ]; then
+		echo "WARNING: $GADGET_CONFIGFS/g1 has been created"
+		exit 0
+	fi
+
+	# create the gadget
+	mkdir $GADGET_CONFIGFS/g1 
+	cd $GADGET_CONFIGFS/g1
+
+	echo 0x05a9 > idVendor
+	echo 0x7884 > idProduct
+	echo 0x0510 > bcdDevice
+	echo 0x0200 > bcdUSB
+
+	echo 0xEF > bDeviceClass
+	echo 0x02 > bDeviceSubClass
+	echo 0x01 > bDeviceProtocol
+
+	mkdir strings/0x409
+	echo "Omnivision Technologies, Inc." > strings/0x409/manufacturer
+	echo "USB OV Camera" > strings/0x409/product
+	echo "0"    > strings/0x409/serialnumber	# FIXME: how to set it?
+
+	# create the configurations
+	mkdir configs/c.1
+	echo "256"  > configs/c.1/MaxPower
+
+	mkdir configs/c.1/strings/0x409
+	echo "USB OV Video" > configs/c.1/strings/0x409/configuration
+
+	# create the functions
+	mkdir functions/uvc.usb0
+
+	mkdir functions/uvc.usb0/streaming/uncompressed/h
+	echo -n -e "\x4e\x56\x31\x32\x00\x00\x10\x00\x80\x00\x00\xaa\x00\x38\x9b\x71" > functions/uvc.usb0/streaming/uncompressed/h/guidFormat		# nv12
+	echo 12 > functions/uvc.usb0/streaming/uncompressed/h/bBitsPerPixel
+	create_frame_attrs uncompressed cur 1280 720 666666 18432000 55296000
+
+	mkdir functions/uvc.usb0/streaming/h264/h
+	create_frame_attrs h264 cur 1920 1080 333333 29491200 29491200
+	create_frame_attrs h264 720p 1280 720 333333 18432000 55296000
+
+	mkdir functions/uvc.usb0/streaming/header/h
+	mkdir functions/uvc.usb0/control/header/h
+	echo 30000000 > functions/uvc.usb0/control/header/h/dwClockFrequency
+
+	echo 1024 > functions/uvc.usb0/streaming_maxpacket
+}
+
+configfs_enable()
+{
+	if ! [ -d "$GADGET_CONFIGFS/g1" ]; then
+		echo "ERROR: $GADGET_CONFIGFS/g1 doesn't exist"
+		exit 1
+	fi
+
+	if [ -n "`cat $GADGET_CONFIGFS/g1/UDC`" ]; then
+		echo "ERROR: usb_gadget is enabled already"
+		exit 1
+	fi
+
+	cd $GADGET_CONFIGFS/g1
+
+	# link headers
+
+	# FIXME: The order of the link will decide the different "bFormatIndex" for formats
+	ln -s functions/uvc.usb0/streaming/h264/h functions/uvc.usb0/streaming/header/h/h264_h
+	ln -s functions/uvc.usb0/streaming/uncompressed/h functions/uvc.usb0/streaming/header/h/uncompressed_h
+
+	ln -s functions/uvc.usb0/streaming/header/h functions/uvc.usb0/streaming/class/fs/
+	ln -s functions/uvc.usb0/streaming/header/h functions/uvc.usb0/streaming/class/hs/
+	#ln -s functions/uvc.usb0/streaming/header/h functions/uvc.usb0/streaming/class/ss/
+
+	ln -s functions/uvc.usb0/control/header/h functions/uvc.usb0/control/class/fs/
+	ln -s functions/uvc.usb0/control/header/h functions/uvc.usb0/control/class/ss/
+
+	# associate the functions with configurations
+	ln -s functions/uvc.usb0   configs/c.1/
+
+	# enable the gadget
+	echo `ls /sys/class/udc` > UDC
+}
+
+configfs_disable()
+{
+	if ! [ -d "$GADGET_CONFIGFS/g1" ]; then
+		echo "ERROR: $GADGET_CONFIGFS/g1 doesn't exist"
+		exit 1
+	fi
+
+	if [ -z "`cat $GADGET_CONFIGFS/g1/UDC`" ]; then
+		echo "ERROR: usb_gadget is disabled already"
+		exit 1
+	fi
+
+	#FIXME: is there any better way to judge uvc running?
+	if ps | grep '\<uvc\>' | grep -v 'grep' > /dev/null; then
+		echo "ERROR: uvc process is running"
+		exit 1
+	fi
+
+	cd $GADGET_CONFIGFS/g1
+
+	if ! [ -d configs/c.1/uvc.usb0 ]; then
+		exit 0
+	fi
+
+	# disable the gadget
+	echo "" > UDC
+
+	# de-associate the functions with configurations
+	rm configs/c.1/uvc.usb0
+
+	# remove symbolic links in function headers
+	rm `find functions/ -name h -type l`
+	rm functions/uvc.usb0/streaming/header/h/h264_h
+	rm functions/uvc.usb0/streaming/header/h/uncompressed_h
+
+	# cleanup functions
+	rmdir functions/uvc.usb0/streaming/header/h
+	rmdir functions/uvc.usb0/control/header/h
+
+	remove_frame_attrs h264 cur
+	remove_frame_attrs h264 720p
+	rmdir functions/uvc.usb0/streaming/h264/h
+
+	remove_frame_attrs uncompressed cur
+	rmdir functions/uvc.usb0/streaming/uncompressed/h
+
+	rmdir functions/uvc.usb0
+
+	# cleanup configurations
+	rmdir configs/c.1/strings/0x409
+	rmdir configs/c.1
+
+	# cleanup gadget
+	rmdir strings/0x409
+	cd ..
+	rmdir g1
+}
+
+#
+# main
+#
+cmd=$1
+
+if [ "$cmd" == "prepare" ]; then
+	configfs_prepare
+elif [ "$cmd" == "enable" ]; then
+	configfs_enable
+elif [ "$cmd" == "disable" ]; then
+	configfs_disable
+else
+	usage
+fi

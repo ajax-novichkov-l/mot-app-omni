@@ -1,0 +1,72 @@
+#!/bin/sh
+
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin:/gst
+export DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket
+
+start() {
+if [ "$PS1" ]; then
+	export PS1='\h:\w$ '
+    export USER=root
+    export HISTSIZE=50
+	alias slp='pmgr sleep now'
+	alias slpoff='pmgr sleep off'
+	alias calitool='fw_setenv bootcmd cali; reboot'
+	export PATH=$PATH:/usr/bin/qa:/opt/bin:/opt/sbin:/opt/usr/bin:/opt/usr/sbin:/userfs/bin:/userfs/sbin/:/userfs/lib/libexec
+	export LD_LIBRARY_PATH=/opt/lib:/opt/usr/lib:/userfs/lib:/lib
+	export GST_PLUGIN_PATH=/opt/usr/lib/gstreamer-1.0:/gst
+fi
+
+if cat /proc/filesystems | grep -q "configfs"; then
+	mount | grep -q ^configfs || mount -t configfs none /sys/kernel/config
+fi
+
+GADGET_CONFIGFS=/sys/kernel/config/usb_gadget
+if [ -d $GADGET_CONFIGFS ] && [ ! -f /dev/video0 ]; then
+	if /tmp/nfs/uvc_configfs prepare >/dev/null; then
+
+		uvc_width=`fw_printenv uvc_width`
+		uvc_height=`fw_printenv uvc_height`
+
+		if [ -n "$uvc_width" ] && [ "$uvc_width" != "0" ] \
+			&& [ -n "$uvc_height" ] && [ "$uvc_height" != "0" ]; then
+			# for nv12/ovyuv uvc
+			echo $uvc_width > $GADGET_CONFIGFS/g1/functions/uvc.usb0/streaming/uncompressed/h/cur/wWidth
+			echo $uvc_height > $GADGET_CONFIGFS/g1/functions/uvc.usb0/streaming/uncompressed/h/cur/wHeight
+		fi
+
+		#FIXME: Assuming vs0 as h264 stream, which may be not right in some case. Need to find a better way in the future.
+		vs0_res=`fw_printenv vs0.res`
+		if [ -n "$vs0_res" ] && [ "$vs0_res" != "0" ]; then
+			# for h264 uvc
+			echo $(( vs0_res >> 16 )) > $GADGET_CONFIGFS/g1/functions/uvc.usb0/streaming/h264/h/cur/wWidth
+			echo $(( vs0_res & 0xffff )) > $GADGET_CONFIGFS/g1/functions/uvc.usb0/streaming/h264/h/cur/wHeight
+		fi
+
+		/tmp/nfs/uvc_configfs enable
+	fi
+fi
+
+
+}
+
+stop() {
+
+	return 0
+}
+
+restart() {
+	stop
+	sleep 1
+	start 1
+}
+
+case "$1" in
+	start|stop|restart)
+		"$1";;
+	reload)
+		# Restart, since there is no true "reload" feature.
+		restart;;
+	*)
+		echo "Usage: $0 {start|stop|restart|reload}"
+		exit 1
+esac
